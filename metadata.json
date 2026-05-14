@@ -1,0 +1,6 @@
+{
+  "name": "Namma-Railu Buddy",
+  "description": "A community-powered passenger guide for local trains, providing platform numbers, coach positions, and crowdsourced delay updates with a focus on rural-to-city commuters.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["Real-time crowdsourcing", "Geofencing Alarms", "Native Kotlin Integration"]
+}

@@ -1,0 +1,118 @@
+{
+  "entities": {
+    "Station": {
+      "title": "Station",
+      "description": "A railway station with geographic coordinates.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" }
+      },
+      "required": ["id", "name", "latitude", "longitude"]
+    },
+    "PlatformPing": {
+      "title": "Platform Ping",
+      "description": "Crowdsourced platform information for a specific train at a station.",
+      "type": "object",
+      "properties": {
+        "trainId": { "type": "string" },
+        "stationId": { "type": "string" },
+        "platform": { "type": "string" },
+        "confirmedBy": {
+          "type": "array",
+          "description": "List of user UIDs who confirmed this ping."
+        },
+        "reportedBy": { "type": "string", "description": "UID of the user who first reported it." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["trainId", "stationId", "platform", "reportedBy", "createdAt", "expiresAt"]
+    },
+    "Train": {
+      "title": "Train",
+      "description": "Information about a local train.",
+      "type": "object",
+      "properties": {
+        "number": { "type": "string" },
+        "name": { "type": "string" },
+        "coaches": {
+          "type": "array",
+          "description": "Ordered list of coach types (e.g., 'Engine', 'General', 'Ladies', 'General')."
+        },
+        "route": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of station IDs in order."
+        }
+      },
+      "required": ["number", "name", "coaches", "route"]
+    },
+    "DelayReport": {
+      "title": "Delay Report",
+      "description": "Crowdsourced train delay information.",
+      "type": "object",
+      "properties": {
+        "trainId": { "type": "string" },
+        "minutes": { "type": "number" },
+        "reason": { "type": "string" },
+        "reportedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["trainId", "minutes", "reportedBy", "createdAt"]
+    },
+    "CoachAvailability": {
+      "title": "Coach Availability",
+      "description": "Crowdsourced coach seat availability status.",
+      "type": "object",
+      "properties": {
+        "trainId": { "type": "string" },
+        "coachId": { "type": "string" },
+        "status": { "type": "string", "enum": ["empty", "moderate", "full"] },
+        "reportedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["trainId", "coachId", "status", "reportedBy", "createdAt"]
+    },
+    "LiveTrainPosition": {
+      "title": "Live Train Position",
+      "description": "Anonymized real-time coordinate of a train reported by a user onboard.",
+      "type": "object",
+      "properties": {
+        "trainId": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "reportedBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["trainId", "latitude", "longitude", "reportedBy", "createdAt"]
+    }
+  },
+  "firestore": {
+    "stations": {
+      "schema": "Station",
+      "description": "Collection of railway stations."
+    },
+    "trains": {
+      "schema": "Train",
+      "description": "Collection of train schedules and coach positions."
+    },
+    "pings": {
+      "schema": "PlatformPing",
+      "description": "Real-time crowdsourced platform updates."
+    },
+    "delays": {
+      "schema": "DelayReport",
+      "description": "Crowdsourced train delay reports."
+    },
+    "availability": {
+      "schema": "CoachAvailability",
+      "description": "Crowdsourced coach seat availability reports."
+    },
+    "live_positions": {
+      "schema": "LiveTrainPosition",
+      "description": "Real-time crowdsourced coordinates for trains."
+    }
+  }
+}

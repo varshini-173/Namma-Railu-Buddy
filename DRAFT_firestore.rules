@@ -1,0 +1,77 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Entities ---
+
+    // Stations: Public read, No write (managed by system)
+    match /stations/{stationId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Trains: Public read, No write (managed by system)
+    match /trains/{trainNumber} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Pings: Signed-in read/write with strict identity checks
+    match /pings/{pingId} {
+      allow read: if true; // Crowdsourced data is public to view
+
+      function isValidPing(data) {
+        return data.trainId is string && data.trainId.size() <= 32 &&
+               data.stationId is string && data.stationId.size() <= 32 &&
+               data.platform is string && data.platform.size() <= 10 &&
+               data.reportedBy == request.auth.uid &&
+               data.confirmedBy is list &&
+               data.createdAt == request.time &&
+               data.expiresAt is timestamp;
+      }
+
+      allow create: if isSignedIn() && 
+                    isValidId(pingId) && 
+                    isValidPing(incoming()) && 
+                    incoming().confirmedBy.size() == 0;
+
+      allow update: if isSignedIn() && (
+        // Action: Confirm a ping (add self to list)
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['confirmedBy']) &&
+          incoming().confirmedBy.size() == existing().confirmedBy.size() + 1 &&
+          incoming().confirmedBy.hasAll(existing().confirmedBy) &&
+          request.auth.uid in incoming().confirmedBy &&
+          !(request.auth.uid in existing().confirmedBy)
+        )
+      );
+      
+      allow delete: if false; // Pings expire naturally or restricted
+    }
+  }
+}

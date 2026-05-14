@@ -1,11 +1,29 @@
-<div align="center">
+# Namma-Railu Buddy 🚆 (Android Edition)
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+A community-powered passenger guide for local trains in the Karnataka region.
 
-  <h1>Built with AI Studio</h2>
+## Kotlin / Android Development
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+This project includes a complete Native Android implementation in the `/android` directory.
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+### Structure:
+- **Build System**: Gradle Kotlin DSL (`build.gradle.kts`)
+- **UI Framework**: Jetpack Compose 2025 (Material 3)
+- **Firebase SDK**: Integrated for Firestore and Auth
+- **Geofencing**: Fused Location Provider with distance calculations
 
-</div>
+### How to Build:
+1. Export the project as a ZIP or to GitHub.
+2. Open the `/android` folder in **Android Studio**.
+3. The project uses manual Firebase initialization based on your `firebase-applet-config.json`, so it works out of the box!
+4. Build and Run!
+
+## Backend (Firebase)
+
+- **Firestore**: Stores live platform pings.
+- **Security Rules**: Handled via `firestore.rules` (already deployed).
+- **Authentication**: Google/Anonymous login supported.
+
+## Web Preview
+
+The web preview in this environment is a lightweight shim that points you to the Android files. For full mobile functionality (Geolocation, Vibration, Native UI), use the Android source code located in the `/android` folder.
