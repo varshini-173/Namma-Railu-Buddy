@@ -50,4 +50,42 @@ export const TRAINS: Train[] = [
       { stationId: 'MYS', arrival: '20:30', departure: 'Ends' },
     ]
   },
+  {
+    number: '16535',
+    name: 'MYS-SUR Golgumbaz Express',
+    coaches: ['Engine', 'General', 'S1', 'S2', 'S3', 'S4', 'S5', 'B1', 'B2', 'A1', 'General'],
+    route: ['MYS', 'MYA', 'CPT', 'RMGM', 'SBC', 'YPR', 'TK', 'RRB'],
+    schedule: [
+      { stationId: 'MYS', arrival: 'Starts', departure: '15:30' },
+      { stationId: 'MYA', arrival: '16:18', departure: '16:20' },
+      { stationId: 'CPT', arrival: '16:47', departure: '16:48' },
+      { stationId: 'RMGM', arrival: '16:58', departure: '16:59' },
+      { stationId: 'SBC', arrival: '18:00', departure: '18:20' },
+      { stationId: 'YPR', arrival: '18:33', departure: '18:35' },
+      { stationId: 'TK', arrival: '19:28', departure: '19:30' },
+      { stationId: 'RRB', arrival: '21:05', departure: 'Ends' },
+    ]
+  },
+  {
+    number: '06575',
+    name: 'SBC-TK MEMU Passenger',
+    coaches: ['Engine', 'General', 'General', 'General', 'General', 'General', 'General'],
+    route: ['SBC', 'YPR', 'TK'],
+    schedule: [
+      { stationId: 'SBC', arrival: 'Starts', departure: '08:30' },
+      { stationId: 'YPR', arrival: '08:42', departure: '08:44' },
+      { stationId: 'TK', arrival: '09:45', departure: 'Ends' },
+    ]
+  },
+  {
+    number: '12614',
+    name: 'MYS-SBC Tipu Express',
+    coaches: ['Engine', 'General', 'D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'General'],
+    route: ['MYS', 'MYA', 'SBC'],
+    schedule: [
+      { stationId: 'MYS', arrival: 'Starts', departure: '11:30' },
+      { stationId: 'MYA', arrival: '12:13', departure: '12:15' },
+      { stationId: 'SBC', arrival: '13:45', departure: 'Ends' },
+    ]
+  },
 ];

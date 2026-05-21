@@ -101,5 +101,43 @@ val TRAINS = listOf(
             ScheduleItem("MYA", "19:18", "19:20"),
             ScheduleItem("MYS", "20:30", "Ends")
         )
+    ),
+    Train(
+        "16535",
+        "MYS-SUR Golgumbaz Express",
+        listOf("Engine", "General", "S1", "S2", "S3", "S4", "S5", "B1", "B2", "A1", "General"),
+        listOf("MYS", "MYA", "CPT", "RMGM", "SBC", "YPR", "TK", "RRB"),
+        listOf(
+            ScheduleItem("MYS", "Starts", "15:30"),
+            ScheduleItem("MYA", "16:18", "16:20"),
+            ScheduleItem("CPT", "16:47", "16:48"),
+            ScheduleItem("RMGM", "16:58", "16:59"),
+            ScheduleItem("SBC", "18:00", "18:20"),
+            ScheduleItem("YPR", "18:33", "18:35"),
+            ScheduleItem("TK", "19:28", "19:30"),
+            ScheduleItem("RRB", "21:05", "Ends")
+        )
+    ),
+    Train(
+        "06575",
+        "SBC-TK MEMU Passenger",
+        listOf("Engine", "General", "General", "General", "General", "General", "General"),
+        listOf("SBC", "YPR", "TK"),
+        listOf(
+            ScheduleItem("SBC", "Starts", "08:30"),
+            ScheduleItem("YPR", "08:42", "08:44"),
+            ScheduleItem("TK", "09:45", "Ends")
+        )
+    ),
+    Train(
+        "12614",
+        "MYS-SBC Tipu Express",
+        listOf("Engine", "General", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "General"),
+        listOf("MYS", "MYA", "SBC"),
+        listOf(
+            ScheduleItem("MYS", "Starts", "11:30"),
+            ScheduleItem("MYA", "12:13", "12:15"),
+            ScheduleItem("SBC", "13:45", "Ends")
+        )
     )
 )

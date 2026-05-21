@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Train as TrainIcon, 
   MapPin, 
@@ -23,7 +23,15 @@ import {
   Wifi,
   ChevronRight,
   Calendar,
-  Map as MapIcon
+  Map as MapIcon,
+  Filter,
+  Play,
+  Pause,
+  Zap,
+  History,
+  Volume2,
+  VolumeX,
+  Home
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, User } from 'firebase/auth';
@@ -82,20 +90,98 @@ function RoutePolyline({ stations }: { stations: Station[] }) {
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [activeTab, setActiveTab] = useState<'pings' | 'coach' | 'alarm' | 'map' | 'schedule'>('pings');
+  const [activeTab, setActiveTab] = useState<'home' | 'pings' | 'coach' | 'alarm' | 'map' | 'schedule'>('home');
   const [selectedStation, setSelectedStation] = useState<Station | null>(STATIONS[0]);
   const [selectedTrain, setSelectedTrain] = useState<Train | null>(TRAINS[0]);
   const [trainSearch, setTrainSearch] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [pings, setPings] = useState<PlatformPing[]>([]);
+  const [selectedPlatformFilter, setSelectedPlatformFilter] = useState<string>('All');
   const [trainLocation, setTrainLocation] = useState<Station | null>(null);
   const [livePosition, setLivePosition] = useState<{lat: number, lng: number} | null>(null);
+  
+  // Custom states for smoothness & simulated movement
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [simProgress, setSimProgress] = useState({ segmentIndex: 0, progress: 0 });
+  const [animatedTrainPosition, setAnimatedTrainPosition] = useState<{lat: number, lng: number} | null>(null);
+  const [simSpeed, setSimSpeed] = useState(1);
+  
   const [delays, setDelays] = useState<DelayReport[]>([]);
   const [availability, setAvailability] = useState<CoachAvailability[]>([]);
   const [showDelayModal, setShowDelayModal] = useState(false);
+  const [showFABModal, setShowFABModal] = useState(false);
+  const [currentCarriage, setCurrentCarriage] = useState<string | null>(() => {
+    return localStorage.getItem('current_carriage') || null;
+  });
   const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(null);
   const [destination, setDestination] = useState<Station | null>(null);
   const [alarmActive, setAlarmActive] = useState(false);
+  const [alarmSoundEnabled, setAlarmSoundEnabled] = useState(true);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const lastAlarmTriggerRef = useRef<number>(0);
+
+  const initAudio = () => {
+    if (!audioContextRef.current) {
+      try {
+        // @ts-ignore
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          audioContextRef.current = new AudioCtx();
+        }
+      } catch (e) {
+        console.error("Web Audio initialization failed", e);
+      }
+    }
+  };
+
+  const playAlarmSound = () => {
+    try {
+      initAudio();
+      const ctx = audioContextRef.current;
+      if (!ctx) return;
+
+      // Resume context if suspended (common in mobile browsers)
+      if (ctx.state === 'suspended') {
+        ctx.resume();
+      }
+
+      const now = ctx.currentTime;
+      
+      const playBeepUnit = (startTime: number, duration: number, freq1: number, freq2: number) => {
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+
+        osc1.type = 'sine';
+        osc1.frequency.setValueAtTime(freq1, startTime);
+        
+        osc2.type = 'triangle';
+        osc2.frequency.setValueAtTime(freq2, startTime);
+
+        gainNode.gain.setValueAtTime(0, startTime);
+        gainNode.gain.linearRampToValueAtTime(0.35, startTime + 0.05);
+        gainNode.gain.setValueAtTime(0.35, startTime + duration - 0.05);
+        gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
+
+        osc1.connect(gainNode);
+        osc2.connect(gainNode);
+        gainNode.connect(ctx.destination);
+
+        osc1.start(startTime);
+        osc1.stop(startTime + duration);
+        osc2.start(startTime);
+        osc2.stop(startTime + duration);
+      };
+
+      // Play a custom beautiful dual-tone railway alarm theme chord chime sound
+      playBeepUnit(now, 0.18, 523.25, 783.99); // C5 & G5
+      playBeepUnit(now + 0.25, 0.18, 587.33, 880.00); // D5 & A5
+      playBeepUnit(now + 0.50, 0.38, 659.25, 987.77); // E5 & B5
+    } catch (e) {
+      console.error('AudioContext alarm error', e);
+    }
+  };
+
   const [distanceToDest, setDistanceToDest] = useState<number | null>(null);
   const [platformSuggestions, setPlatformSuggestions] = useState<string[]>([]);
   const [isOnTrain, setIsOnTrain] = useState(false);
@@ -113,6 +199,139 @@ export default function App() {
 
   const [showProfile, setShowProfile] = useState(false);
   const [userHistory, setUserHistory] = useState<{pings: PlatformPing[], delays: DelayReport[], availability: CoachAvailability[]}>({ pings: [], delays: [], availability: [] });
+
+  const availablePlatformOptions = useMemo(() => {
+    const defaultOptions = ['All', '1', '2', '3', '4'];
+    const extraPlatforms = pings
+      .map(p => p.platform)
+      .filter(p => p && !['1', '2', '3', '4'].includes(p));
+    const uniqueExtras = Array.from(new Set(extraPlatforms)).sort();
+    return [...defaultOptions, ...uniqueExtras];
+  }, [pings]);
+
+  const filteredPings = useMemo(() => {
+    if (selectedPlatformFilter === 'All') return pings;
+    return pings.filter(p => p.platform === selectedPlatformFilter);
+  }, [pings, selectedPlatformFilter]);
+
+  // Reset platform filter on station/train change
+  useEffect(() => {
+    setSelectedPlatformFilter('All');
+  }, [selectedStation, selectedTrain]);
+
+  // Reset simulation progress when train changes
+  useEffect(() => {
+    setSimProgress({ segmentIndex: 0, progress: 0 });
+  }, [selectedTrain]);
+
+  // Route Stations List helper
+  const routeStations = useMemo(() => {
+    if (!selectedTrain) return [];
+    return selectedTrain.route.map(id => STATIONS.find(s => s.id === id)).filter(Boolean) as Station[];
+  }, [selectedTrain]);
+
+  // Simulation loop handler
+  useEffect(() => {
+    if (!isSimulating || routeStations.length < 2) return;
+
+    const intervalId = setInterval(() => {
+      setSimProgress(prev => {
+        const increment = 0.008 * simSpeed;
+        let nextProgress = prev.progress + increment;
+        let nextSegment = prev.segmentIndex;
+        
+        if (nextProgress >= 1) {
+          nextProgress = 0;
+          nextSegment = (prev.segmentIndex + 1) % (routeStations.length - 1);
+        }
+        return { segmentIndex: nextSegment, progress: nextProgress };
+      });
+    }, 40);
+
+    return () => clearInterval(intervalId);
+  }, [isSimulating, routeStations, simSpeed]);
+
+  // Compute simulated position
+  const simulatedPos = useMemo(() => {
+    if (routeStations.length < 2) return null;
+    const currentStation = routeStations[simProgress.segmentIndex];
+    const nextStation = routeStations[simProgress.segmentIndex + 1];
+    if (!currentStation || !nextStation) return null;
+
+    const lat = currentStation.latitude + (nextStation.latitude - currentStation.latitude) * simProgress.progress;
+    const lng = currentStation.longitude + (nextStation.longitude - currentStation.longitude) * simProgress.progress;
+
+    return { lat, lng };
+  }, [routeStations, simProgress]);
+
+  // Interactive label for current simulation status
+  const simulatedStatusText = useMemo(() => {
+    if (!isSimulating || routeStations.length < 2) return '';
+    const currentStation = routeStations[simProgress.segmentIndex];
+    const nextStation = routeStations[simProgress.segmentIndex + 1];
+    if (!currentStation || !nextStation) return '';
+    return `Approaching ${nextStation.name} (${Math.round(simProgress.progress * 100)}%)`;
+  }, [isSimulating, routeStations, simProgress]);
+
+  // Smooth position interpolation block (dampens snapping transitions on updates)
+  const targetPos = useMemo(() => {
+    if (isSimulating) return null;
+    if (livePosition) return livePosition;
+    if (trainLocation) return { lat: trainLocation.latitude, lng: trainLocation.longitude };
+    return null;
+  }, [isSimulating, livePosition, trainLocation]);
+
+  useEffect(() => {
+    if (isSimulating && simulatedPos) {
+      setAnimatedTrainPosition(simulatedPos);
+      return;
+    }
+
+    if (!targetPos) {
+      setAnimatedTrainPosition(null);
+      return;
+    }
+
+    // Direct snap if none exists yet
+    if (!animatedTrainPosition) {
+      setAnimatedTrainPosition(targetPos);
+      return;
+    }
+
+    const dist = calculateDistance(animatedTrainPosition.lat, animatedTrainPosition.lng, targetPos.lat, targetPos.lng);
+    if (dist < 0.05) {
+      setAnimatedTrainPosition(targetPos);
+      return;
+    }
+
+    const intervalId = setInterval(() => {
+      setAnimatedTrainPosition(prev => {
+        if (!prev) return targetPos;
+        const latDiff = targetPos.lat - prev.lat;
+        const lngDiff = targetPos.lng - prev.lng;
+        
+        // Slide smoothly towards target destination
+        const speedFactor = 0.12;
+        const nextLat = prev.lat + latDiff * speedFactor;
+        const nextLng = prev.lng + lngDiff * speedFactor;
+
+        return { lat: nextLat, lng: nextLng };
+      });
+    }, 40);
+
+    return () => clearInterval(intervalId);
+  }, [targetPos, isSimulating, simulatedPos, animatedTrainPosition]);
+
+  // Sync simulator updates back to global trainLocation station property for map UI consistency
+  useEffect(() => {
+    if (!isSimulating || !animatedTrainPosition || routeStations.length === 0) return;
+    const nearest = routeStations.reduce((prev, curr) => {
+      const dPrev = calculateDistance(animatedTrainPosition.lat, animatedTrainPosition.lng, prev.latitude, prev.longitude);
+      const dCurr = calculateDistance(animatedTrainPosition.lat, animatedTrainPosition.lng, curr.latitude, curr.longitude);
+      return dPrev < dCurr ? prev : curr;
+    });
+    setTrainLocation(nearest);
+  }, [isSimulating, animatedTrainPosition, routeStations]);
 
   // History listener
   useEffect(() => {
@@ -230,14 +449,25 @@ export default function App() {
       }
 
       if (dist <= 5) {
-        if ('vibrate' in navigator) {
-          navigator.vibrate([500, 200, 500, 200, 500]);
+        const nowMs = Date.now();
+        if (nowMs - lastAlarmTriggerRef.current > 12000) {
+          lastAlarmTriggerRef.current = nowMs;
+          if ('vibrate' in navigator) {
+            navigator.vibrate([500, 200, 500, 200, 500]);
+          }
+          if (alarmSoundEnabled) {
+            try {
+              playAlarmSound();
+            } catch (error) {
+              console.error("Failed to play alarm: ", error);
+            }
+          }
         }
       }
     } else {
       setDistanceToDest(null);
     }
-  }, [currentLocation, destination, alarmActive]);
+  }, [currentLocation, destination, alarmActive, alarmSoundEnabled]);
 
   // Platform Suggestions Logic
   useEffect(() => {
@@ -418,6 +648,7 @@ export default function App() {
     );
 
     const unsub = onSnapshot(q, (snapshot) => {
+      if (isSimulating) return; // Prevent overwrites during active simulation
       if (!snapshot.empty) {
         const latestPing = snapshot.docs[0].data() as PlatformPing;
         const station = STATIONS.find(s => s.id === latestPing.stationId);
@@ -432,7 +663,7 @@ export default function App() {
     });
 
     return unsub;
-  }, [selectedTrain]);
+  }, [selectedTrain, isSimulating]);
 
   // Coach Availability listener
   useEffect(() => {
@@ -572,6 +803,17 @@ export default function App() {
   const trainStatus = useMemo(() => {
     if (!selectedTrain) return null;
     
+    if (isSimulating && simulatedStatusText) {
+      return {
+        label: 'Simulation',
+        subLabel: simulatedStatusText,
+        color: 'text-orange-500',
+        bg: 'bg-orange-500/10',
+        icon: Navigation,
+        proximity: simulatedStatusText
+      };
+    }
+    
     // Proximity logic from live position or pings
     let proximityLabel = '';
     let proximityIcon = Clock;
@@ -636,7 +878,7 @@ export default function App() {
       icon: proximityLabel ? proximityIcon : CheckCircle2,
       proximity: proximityLabel
     };
-  }, [selectedTrain, avgDelay, trainLocation, selectedStation, livePosition]);
+  }, [selectedTrain, avgDelay, trainLocation, selectedStation, livePosition, isSimulating, simulatedStatusText]);
 
   const getCoachInfo = (code: string) => {
     if (code === 'Engine') return { name: 'Locomotive', icon: Navigation, color: 'text-red-400', bg: 'bg-red-500/5', border: 'border-red-500/20', iconRotate: 180 };
@@ -866,154 +1108,156 @@ export default function App() {
 
       <main className="max-w-md mx-auto p-4 space-y-6">
         {/* Selection Area */}
-        <div className="bg-neutral-900/40 border border-neutral-800 p-5 rounded-[2.5rem] shadow-2xl space-y-5">
-          {/* Tracking visualization */}
-          {selectedTrain && (
-            <div className="relative h-24 bg-black/40 rounded-3xl border border-neutral-800/50 overflow-hidden flex items-center px-6">
-              <div className="absolute inset-0 opacity-10 pointer-events-none">
-                <div className="h-full w-full bg-[radial-gradient(circle_at_center,rgba(249,115,22,0.1)_0%,transparent_70%)]"></div>
-              </div>
-              
-              <div className="flex-1 relative flex items-center justify-between">
-                {/* Route Line */}
-                <div className="absolute left-0 right-0 h-0.5 bg-neutral-800"></div>
-                
-                {selectedTrain.route.map((stationId, idx) => {
-                  const station = STATIONS.find(s => s.id === stationId);
-                  const isCurrent = trainLocation?.id === stationId;
-                  const isUserAt = selectedStation?.id === stationId;
-                  
-                  return (
-                    <div key={stationId} className="relative flex flex-col items-center">
-                      <div className={cn(
-                        "w-2.5 h-2.5 rounded-full z-10 transition-all duration-500",
-                        isCurrent ? "bg-orange-500 ring-4 ring-orange-500/20 scale-125" : "bg-neutral-700"
-                      )}></div>
-                      <span className={cn(
-                        "absolute top-4 text-[7px] font-black uppercase tracking-tighter whitespace-nowrap transition-colors",
-                        isCurrent ? "text-orange-500" : "text-neutral-600"
-                      )}>
-                        {station?.id}
-                      </span>
-                      {isCurrent && (
-                        <motion.div 
-                          layoutId="trainIndicator"
-                          className="absolute -top-7"
-                        >
-                          <TrainIcon className="w-4 h-4 text-orange-500" />
-                        </motion.div>
-                      )}
-                      {isUserAt && !isCurrent && (
-                        <div className="absolute -top-5">
-                          <MapPin className="w-3 h-3 text-white" />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse"></div>
-                <span className="text-[8px] font-black text-neutral-500 uppercase tracking-widest">
-                  {trainLocation ? `Currently at ${trainLocation.name}` : 'Position Unknown'}
-                </span>
-              </div>
-            </div>
-          )}
-
-          <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-[0.2em] text-neutral-500 ml-1">Current Station</label>
-            <div className="relative group">
-              <div className="absolute left-4 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-neutral-800 flex items-center justify-center group-focus-within:bg-orange-500 transition-colors">
-                <MapPin className="w-4 h-4 text-neutral-400 group-hover:text-white transition-colors" />
-              </div>
-              <select 
-                value={selectedStation?.id}
-                onChange={(e) => setSelectedStation(STATIONS.find(s => s.id === e.target.value) || null)}
-                className="w-full bg-black border border-neutral-800 rounded-2xl py-4 pl-14 pr-4 appearance-none focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-bold text-white shadow-inner"
-              >
-                {STATIONS.map(s => <option key={s.id} value={s.id}>{s.name} ({s.id})</option>)}
-              </select>
-              <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none opacity-40">
-                <ChevronRight className="w-5 h-5 rotate-90" />
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-[10px] font-black uppercase tracking-[0.2em] text-neutral-500 ml-1">Train Selection</label>
-            <div className="relative group">
-              <div className="absolute left-4 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-neutral-800 flex items-center justify-center group-focus-within:bg-orange-500 transition-colors">
-                <Navigation className="w-4 h-4 text-neutral-400 group-hover:text-white transition-colors" />
-              </div>
-              <select 
-                value={selectedTrain?.number}
-                onChange={(e) => setSelectedTrain(TRAINS.find(t => t.number === e.target.value) || null)}
-                className="w-full bg-black border border-neutral-800 rounded-2xl py-4 pl-14 pr-4 appearance-none focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-bold text-white shadow-inner"
-              >
-                {TRAINS.map(t => <option key={t.number} value={t.number}>{t.number} - {t.name}</option>)}
-              </select>
-              <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none opacity-40">
-                <ChevronRight className="w-5 h-5 rotate-90" />
-              </div>
-            </div>
-            
+        {activeTab !== 'home' && activeTab !== 'map' && (
+          <div className="bg-neutral-900/40 border border-neutral-800 p-5 rounded-[2.5rem] shadow-2xl space-y-5">
+            {/* Tracking visualization */}
             {selectedTrain && (
-              <div className="pt-4 mt-4 border-t border-neutral-800/50 space-y-5">
-                {/* Coach List */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <p className="text-[9px] font-black uppercase tracking-[0.2em] text-neutral-500">Coach Composition</p>
-                    <span className="text-[8px] font-bold text-neutral-600 bg-neutral-800/50 px-2 py-0.5 rounded-full uppercase">Front {`→`} Back</span>
-                  </div>
-                  <div className="flex gap-1.5 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-hide">
-                    {selectedTrain.coaches.map((coach, idx) => {
-                      const info = getCoachInfo(coach);
-                      const Icon = info.icon;
-                      return (
-                        <div key={idx} className={cn(
-                          "shrink-0 w-9 h-12 rounded-xl border flex flex-col items-center justify-center gap-0.5 transition-transform hover:scale-105", 
-                          info.bg, 
-                          info.border
+              <div className="relative h-24 bg-black/40 rounded-3xl border border-neutral-800/50 overflow-hidden flex items-center px-6">
+                <div className="absolute inset-0 opacity-10 pointer-events-none">
+                  <div className="h-full w-full bg-[radial-gradient(circle_at_center,rgba(249,115,22,0.1)_0%,transparent_70%)]"></div>
+                </div>
+                
+                <div className="flex-1 relative flex items-center justify-between">
+                  {/* Route Line */}
+                  <div className="absolute left-0 right-0 h-0.5 bg-neutral-800"></div>
+                  
+                  {selectedTrain.route.map((stationId, idx) => {
+                    const station = STATIONS.find(s => s.id === stationId);
+                    const isCurrent = trainLocation?.id === stationId;
+                    const isUserAt = selectedStation?.id === stationId;
+                    
+                    return (
+                      <div key={stationId} className="relative flex flex-col items-center">
+                        <div className={cn(
+                          "w-2.5 h-2.5 rounded-full z-10 transition-all duration-500",
+                          isCurrent ? "bg-orange-500 ring-4 ring-orange-500/20 scale-125" : "bg-neutral-700"
+                        )}></div>
+                        <span className={cn(
+                          "absolute top-4 text-[7px] font-black uppercase tracking-tighter whitespace-nowrap transition-colors",
+                          isCurrent ? "text-orange-500" : "text-neutral-600"
                         )}>
-                          <Icon 
-                            className={cn("w-4 h-4", info.color)} 
-                            style={info.iconRotate ? { transform: `rotate(${info.iconRotate}deg)` } : {}} 
-                          />
-                          <span className={cn("text-[8px] font-black", info.color)}>{coach.substring(0, 3)}</span>
-                        </div>
-                      )
-                    })}
-                  </div>
+                          {station?.id}
+                        </span>
+                        {isCurrent && (
+                          <motion.div 
+                            layoutId="trainIndicator"
+                            className="absolute -top-7"
+                          >
+                            <TrainIcon className="w-4 h-4 text-orange-500" />
+                          </motion.div>
+                        )}
+                        {isUserAt && !isCurrent && (
+                          <div className="absolute -top-5">
+                            <MapPin className="w-3 h-3 text-white" />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
 
-                {/* Route Summary */}
-                <div className="space-y-3">
-                  <p className="text-[9px] font-black uppercase tracking-[0.2em] text-neutral-500">Main Route Stops</p>
-                  <div className="bg-black/30 rounded-2xl p-3 flex flex-wrap items-center gap-y-2 gap-x-1 border border-neutral-800/30">
-                    {selectedTrain.route.map((stationId, idx) => {
-                      const station = STATIONS.find(s => s.id === stationId);
-                      return (
-                        <React.Fragment key={stationId}>
-                          <div className="flex flex-col items-start px-2 py-1 bg-white/5 rounded-lg border border-white/5">
-                            <span className="text-[9px] font-black text-white leading-tight">{station?.name}</span>
-                            <span className="text-[7px] font-bold text-neutral-500 uppercase tracking-tighter">{stationId}</span>
-                          </div>
-                          {idx < selectedTrain.route.length - 1 && (
-                            <div className="flex items-center px-0.5">
-                              <ChevronRight className="w-3 h-3 text-neutral-800" />
-                            </div>
-                          )}
-                        </React.Fragment>
-                      )
-                    })}
-                  </div>
+                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-orange-500 animate-pulse"></div>
+                  <span className="text-[8px] font-black text-neutral-500 uppercase tracking-widest">
+                    {trainLocation ? `Currently at ${trainLocation.name}` : 'Position Unknown'}
+                  </span>
                 </div>
               </div>
             )}
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black uppercase tracking-[0.2em] text-neutral-500 ml-1">Current Station</label>
+              <div className="relative group">
+                <div className="absolute left-4 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-neutral-800 flex items-center justify-center group-focus-within:bg-orange-500 transition-colors">
+                  <MapPin className="w-4 h-4 text-neutral-400 group-hover:text-white transition-colors" />
+                </div>
+                <select 
+                  value={selectedStation?.id}
+                  onChange={(e) => setSelectedStation(STATIONS.find(s => s.id === e.target.value) || null)}
+                  className="w-full bg-black border border-neutral-800 rounded-2xl py-4 pl-14 pr-4 appearance-none focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-bold text-white shadow-inner"
+                >
+                  {STATIONS.map(s => <option key={s.id} value={s.id}>{s.name} ({s.id})</option>)}
+                </select>
+                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none opacity-40">
+                  <ChevronRight className="w-5 h-5 rotate-90" />
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black uppercase tracking-[0.2em] text-neutral-500 ml-1">Train Selection</label>
+              <div className="relative group">
+                <div className="absolute left-4 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-neutral-800 flex items-center justify-center group-focus-within:bg-orange-500 transition-colors">
+                  <Navigation className="w-4 h-4 text-neutral-400 group-hover:text-white transition-colors" />
+                </div>
+                <select 
+                  value={selectedTrain?.number}
+                  onChange={(e) => setSelectedTrain(TRAINS.find(t => t.number === e.target.value) || null)}
+                  className="w-full bg-black border border-neutral-800 rounded-2xl py-4 pl-14 pr-4 appearance-none focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-bold text-white shadow-inner"
+                >
+                  {TRAINS.map(t => <option key={t.number} value={t.number}>{t.number} - {t.name}</option>)}
+                </select>
+                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none opacity-40">
+                  <ChevronRight className="w-5 h-5 rotate-90" />
+                </div>
+              </div>
+              
+              {selectedTrain && (
+                <div className="pt-4 mt-4 border-t border-neutral-800/50 space-y-5">
+                  {/* Coach List */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-[9px] font-black uppercase tracking-[0.2em] text-neutral-500">Coach Composition</p>
+                      <span className="text-[8px] font-bold text-neutral-600 bg-neutral-800/50 px-2 py-0.5 rounded-full uppercase">Front {`→`} Back</span>
+                    </div>
+                    <div className="flex gap-1.5 overflow-x-auto pb-2 -mx-1 px-1 scrollbar-hide">
+                      {selectedTrain.coaches.map((coach, idx) => {
+                        const info = getCoachInfo(coach);
+                        const Icon = info.icon;
+                        return (
+                          <div key={idx} className={cn(
+                            "shrink-0 w-9 h-12 rounded-xl border flex flex-col items-center justify-center gap-0.5 transition-transform hover:scale-105", 
+                            info.bg, 
+                            info.border
+                          )}>
+                            <Icon 
+                              className={cn("w-4 h-4", info.color)} 
+                              style={info.iconRotate ? { transform: `rotate(${info.iconRotate}deg)` } : {}} 
+                            />
+                            <span className={cn("text-[8px] font-black", info.color)}>{coach.substring(0, 3)}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Route Summary */}
+                  <div className="space-y-3">
+                    <p className="text-[9px] font-black uppercase tracking-[0.2em] text-neutral-500">Main Route Stops</p>
+                    <div className="bg-black/30 rounded-2xl p-3 flex flex-wrap items-center gap-y-2 gap-x-1 border border-neutral-800/30">
+                      {selectedTrain.route.map((stationId, idx) => {
+                        const station = STATIONS.find(s => s.id === stationId);
+                        return (
+                          <React.Fragment key={stationId}>
+                            <div className="flex flex-col items-start px-2 py-1 bg-white/5 rounded-lg border border-white/5">
+                              <span className="text-[9px] font-black text-white leading-tight">{station?.name}</span>
+                              <span className="text-[7px] font-bold text-neutral-500 uppercase tracking-tighter">{stationId}</span>
+                            </div>
+                            {idx < selectedTrain.route.length - 1 && (
+                              <div className="flex items-center px-0.5">
+                                <ChevronRight className="w-3 h-3 text-neutral-800" />
+                              </div>
+                            )}
+                          </React.Fragment>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Delay Reporting Modal */}
         <AnimatePresence>
@@ -1075,8 +1319,224 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        {/* Carriage Availability Quick Report Modal */}
+        <AnimatePresence>
+          {showFABModal && selectedTrain && (
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowFABModal(false)}
+                className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+              />
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                className="relative w-full max-w-sm bg-neutral-900 border border-neutral-800 rounded-[2.5rem] p-8 shadow-2xl space-y-6"
+              >
+                <div className="text-center space-y-1">
+                  <h3 className="text-xl font-black italic tracking-tighter text-white">Carriage Presence</h3>
+                  <p className="text-[10px] uppercase font-black tracking-widest text-neutral-500">
+                    Quickly report crowd level for {selectedTrain.name}
+                  </p>
+                </div>
+
+                {/* Carriage Selection */}
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black uppercase tracking-widest text-neutral-400">Current Carriage / Coach</label>
+                  <div className="relative group">
+                    <select
+                      value={currentCarriage || selectedTrain.coaches[0]}
+                      onChange={(e) => {
+                        setCurrentCarriage(e.target.value);
+                        localStorage.setItem('current_carriage', e.target.value);
+                      }}
+                      className="w-full bg-black border border-neutral-800 rounded-2xl py-3.5 px-4 appearance-none focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-bold text-white text-xs shadow-inner cursor-pointer"
+                    >
+                      {selectedTrain.coaches.map(coach => {
+                        const info = getCoachInfo(coach);
+                        return (
+                          <option key={coach} value={coach}>
+                            {coach} - {info.name}
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none opacity-40">
+                      <ChevronRight className="w-4 h-4 rotate-90 text-white" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Crowd Level Reporting Selector */}
+                <div className="space-y-3 pt-2">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-neutral-400">Current Crowd Status</p>
+                  <div className="flex flex-col gap-2.5">
+                    {[
+                      { status: 'empty', label: 'Plenty of Seats', desc: 'Lots of free rows & seats available', color: 'border-green-500/25 hover:border-green-500 bg-green-500/5 text-green-400 hover:bg-green-500/10' },
+                      { status: 'moderate', label: 'Moderate Crowd', desc: 'No seats left, comfortable standing', color: 'border-yellow-500/25 hover:border-yellow-500 bg-yellow-500/5 text-yellow-400 hover:bg-yellow-500/10' },
+                      { status: 'full', label: 'Standing Room Only', desc: 'Packed carriage, highly crowded', color: 'border-red-500/25 hover:border-red-500 bg-red-500/5 text-red-500 hover:bg-red-500/10' }
+                    ].map(item => (
+                      <button
+                        key={item.status}
+                        onClick={() => {
+                          const coachId = currentCarriage || selectedTrain.coaches[0];
+                          handleReportAvailability(coachId, item.status as any);
+                          setShowFABModal(false);
+                        }}
+                        className={cn(
+                          "w-full text-left p-4 rounded-2xl border transition-all flex flex-col gap-0.5 cursor-pointer",
+                          item.color
+                        )}
+                      >
+                        <span className="text-xs font-black tracking-tight">{item.label}</span>
+                        <span className="text-[9px] font-medium text-neutral-500 uppercase tracking-wide">{item.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button 
+                  onClick={() => setShowFABModal(false)}
+                  className="w-full py-2 text-[10px] font-black uppercase tracking-widest text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
         {/* Tab Content */}
         <AnimatePresence mode="wait">
+          {activeTab === 'home' && (
+            <motion.div
+              key="home"
+              initial={{ opacity: 0, y: 15 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -15 }}
+              className="space-y-6"
+            >
+              {/* Welcome Banner */}
+              <div className="bg-gradient-to-br from-neutral-900 via-neutral-950 to-neutral-900 border border-neutral-800/80 rounded-[2.5rem] p-6 shadow-2xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-6 opacity-5 pointer-events-none">
+                  <TrainIcon className="w-24 h-24 text-white" />
+                </div>
+                <h3 className="text-xl font-black italic tracking-tighter text-white">Namma Railu Dashboard</h3>
+                <p className="text-[10px] font-black uppercase tracking-[0.25em] text-neutral-500 mt-1">Select any feature below to get information</p>
+                {selectedTrain && (
+                  <div className="mt-4 flex items-center justify-between bg-black/40 border border-neutral-800/50 rounded-2xl p-3">
+                    <div>
+                      <p className="text-[8px] font-black uppercase tracking-widest text-orange-500">Selected Train</p>
+                      <p className="text-[11px] font-black tracking-tight text-white mt-0.5">{selectedTrain.number} - {selectedTrain.name}</p>
+                    </div>
+                    <span className="text-[8px] font-black bg-orange-500/10 text-orange-400 px-2 py-1 rounded-md uppercase tracking-wider">
+                      {selectedTrain.route.length} Stops
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Grid of buttons / cards */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* 1. Map (Spans full width for premium feel) */}
+                <button
+                  onClick={() => setActiveTab('map')}
+                  className="col-span-2 relative overflow-hidden bg-gradient-to-br from-emerald-500/5 to-neutral-950 hover:from-emerald-500/10 hover:to-neutral-900 border border-emerald-500/15 hover:border-emerald-500/30 rounded-3xl p-6 text-left transition-all duration-300 group shadow-lg shadow-emerald-950/10 hover:shadow-emerald-950/20 active:scale-[0.98] cursor-pointer"
+                >
+                  <div className="absolute top-0 right-0 p-5 opacity-10 group-hover:opacity-20 transition-all duration-500 group-hover:scale-110">
+                    <MapIcon className="w-16 h-16 text-emerald-400" />
+                  </div>
+                  <div className="flex flex-col gap-4">
+                    <div className="bg-emerald-500/10 p-3 rounded-2xl w-fit border border-emerald-500/20 group-hover:bg-emerald-500/20 transition-colors">
+                      <MapIcon className="w-6 h-6 text-emerald-400" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-black uppercase tracking-wider text-white">Live Route Map</h4>
+                      <p className="text-[10px] text-neutral-500 mt-1 font-bold leading-relaxed">
+                        Track live train location on an interactive map.
+                      </p>
+                    </div>
+                  </div>
+                </button>
+
+                {/* 2. Platform Pings */}
+                <button
+                  onClick={() => setActiveTab('pings')}
+                  className="bg-gradient-to-br from-orange-500/5 to-neutral-950 hover:from-orange-500/10 hover:to-neutral-900 border border-orange-500/15 hover:border-orange-500/30 rounded-3xl p-5 text-left transition-all duration-300 group shadow-lg shadow-orange-950/5 active:scale-[0.98] cursor-pointer"
+                >
+                  <div className="flex flex-col gap-3 justify-between h-full">
+                    <div className="bg-orange-500/10 p-2 rounded-xl w-fit border border-orange-500/20 group-hover:bg-orange-500/20 transition-colors">
+                      <Wifi className="w-5 h-5 text-orange-400" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-white">Platform reports</h4>
+                      <p className="text-[9px] text-neutral-500 mt-1 font-bold leading-normal">
+                        Crowdsourced platform updates & delay info.
+                      </p>
+                    </div>
+                  </div>
+                </button>
+
+                {/* 3. Coach Position */}
+                <button
+                  onClick={() => setActiveTab('coach')}
+                  className="bg-gradient-to-br from-blue-500/5 to-neutral-950 hover:from-blue-500/10 hover:to-neutral-900 border border-blue-500/15 hover:border-blue-500/30 rounded-3xl p-5 text-left transition-all duration-300 group shadow-lg shadow-blue-950/5 active:scale-[0.98] cursor-pointer"
+                >
+                  <div className="flex flex-col gap-3 justify-between h-full">
+                    <div className="bg-blue-500/10 p-2 rounded-xl w-fit border border-blue-500/20 group-hover:bg-blue-500/20 transition-colors">
+                      <LayoutList className="w-5 h-5 text-blue-400" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-white">Coach Position</h4>
+                      <p className="text-[9px] text-neutral-500 mt-1 font-bold leading-normal">
+                        Inspect engine layout & seat crowd status.
+                      </p>
+                    </div>
+                  </div>
+                </button>
+
+                {/* 4. Timetable Schedule */}
+                <button
+                  onClick={() => setActiveTab('schedule')}
+                  className="bg-gradient-to-br from-purple-500/5 to-neutral-950 hover:from-purple-500/10 hover:to-neutral-900 border border-purple-500/15 hover:border-purple-500/30 rounded-3xl p-5 text-left transition-all duration-300 group shadow-lg shadow-purple-950/5 active:scale-[0.98] cursor-pointer"
+                >
+                  <div className="flex flex-col gap-3 justify-between h-full">
+                    <div className="bg-purple-500/10 p-2 rounded-xl w-fit border border-purple-500/20 group-hover:bg-purple-500/20 transition-colors">
+                      <Calendar className="w-5 h-5 text-purple-400" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-white">Full timetable</h4>
+                      <p className="text-[9px] text-neutral-500 mt-1 font-bold leading-normal">
+                        View complete station timings list.
+                      </p>
+                    </div>
+                  </div>
+                </button>
+
+                {/* 5. Destination Alarm */}
+                <button
+                  onClick={() => setActiveTab('alarm')}
+                  className="bg-gradient-to-br from-rose-500/5 to-neutral-950 hover:from-rose-500/10 hover:to-neutral-900 border border-rose-500/15 hover:border-rose-500/30 rounded-3xl p-5 text-left transition-all duration-300 group shadow-lg shadow-rose-950/5 active:scale-[0.98] cursor-pointer"
+                >
+                  <div className="flex flex-col gap-3 justify-between h-full">
+                    <div className="bg-rose-500/10 p-2 rounded-xl w-fit border border-rose-500/20 group-hover:bg-rose-500/20 transition-colors">
+                      <Bell className="w-5 h-5 text-rose-400 font-bold" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-white">Wake-up Alarm</h4>
+                      <p className="text-[9px] text-neutral-500 mt-1 font-bold leading-normal">
+                        Vibrating sound alerts before destination.
+                      </p>
+                    </div>
+                  </div>
+                </button>
+              </div>
+            </motion.div>
+          )}
+
           {activeTab === 'pings' && (
             <motion.div 
               key="pings"
@@ -1197,6 +1657,31 @@ export default function App() {
                 </motion.div>
               )}
 
+              {/* Platform Filter component */}
+              {pings.length > 0 && (
+                <div className="bg-neutral-950/40 p-2.5 rounded-[1.5rem] border border-neutral-800/40 flex items-center gap-2 overflow-x-auto scrollbar-hide">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-neutral-500 pl-2 shrink-0 flex items-center gap-1.5">
+                    <Filter className="w-3 h-3 text-neutral-500" /> Filter PF:
+                  </span>
+                  <div className="flex items-center gap-1.5 pl-1">
+                    {availablePlatformOptions.map((pf) => (
+                      <button
+                        key={pf}
+                        onClick={() => setSelectedPlatformFilter(pf)}
+                        className={cn(
+                          "px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer",
+                          selectedPlatformFilter === pf
+                            ? "bg-orange-500 text-white shadow-lg shadow-orange-500/20"
+                            : "bg-neutral-100/10 text-neutral-400 hover:text-neutral-200 border border-neutral-800/60"
+                        )}
+                      >
+                        {pf === 'All' ? 'All' : `PF ${pf}`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {pings.length === 0 ? (
                 <div className="bg-neutral-900/30 border-2 border-dashed border-neutral-800 rounded-[2rem] p-10 text-center space-y-4">
                   <div className="w-16 h-16 bg-neutral-900 border border-neutral-800 rounded-full flex items-center justify-center mx-auto ring-4 ring-orange-500/5">
@@ -1207,9 +1692,19 @@ export default function App() {
                     <p className="text-neutral-700 text-[10px] uppercase font-black tracking-widest">Share info to help others!</p>
                   </div>
                 </div>
+              ) : filteredPings.length === 0 ? (
+                <div className="bg-neutral-900/10 border border-neutral-800 rounded-[2rem] p-8 text-center space-y-3">
+                  <div className="w-12 h-12 bg-neutral-950/60 border border-neutral-800 rounded-full flex items-center justify-center mx-auto">
+                    <Info className="w-5 h-5 text-neutral-500" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-neutral-400 text-xs font-bold">No active reports for Platform {selectedPlatformFilter}</p>
+                    <p className="text-neutral-600 text-[8px] uppercase font-black tracking-widest">Select another platform filter or clear it</p>
+                  </div>
+                </div>
               ) : (
                 <div className="space-y-4">
-                  {pings.map((ping) => (
+                  {filteredPings.map((ping) => (
                     <motion.div 
                       layout
                       key={ping.id} 
@@ -1336,6 +1831,36 @@ export default function App() {
                 </div>
               </div>
 
+              {/* On-Board Status & Manual Override Toggle */}
+              <div className="bg-neutral-900/40 border border-neutral-800 p-4 rounded-3xl flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className={cn(
+                    "w-2.5 h-2.5 rounded-full shadow-lg transition-colors",
+                    isOnTrain ? "bg-orange-500 animate-pulse shadow-orange-500/30" : "bg-neutral-600"
+                  )} />
+                  <div>
+                    <span className="text-[9px] font-black uppercase tracking-widest text-neutral-300">
+                      On-Board Tracker
+                    </span>
+                    <p className="text-[8px] font-black uppercase text-neutral-500 tracking-wider mt-0.5">
+                      {isOnTrain ? "Active ride detected on board" : "Not riding this train"}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsOnTrain(!isOnTrain)}
+                  className={cn(
+                    "text-[8px] font-black uppercase tracking-widest px-3 py-1.5 rounded-full border transition-all cursor-pointer",
+                    isOnTrain 
+                      ? "bg-orange-500 text-white border-orange-500 shadow-md shadow-orange-500/20" 
+                      : "bg-neutral-900 text-neutral-400 border-neutral-800 hover:border-neutral-700"
+                  )}
+                >
+                  {isOnTrain ? "Disembark" : "On Board"}
+                </button>
+              </div>
+
               <div className="relative pl-10 border-l-[3px] border-neutral-800 py-6 space-y-4">
                 {selectedTrain?.coaches.map((coach, idx) => {
                   const info = getCoachInfo(coach);
@@ -1430,6 +1955,27 @@ export default function App() {
                   );
                 })}
               </div>
+
+              {/* Floating Action Button (FAB) for Quick Availability Report */}
+              {isOnTrain && selectedTrain && (
+                <div className="fixed bottom-28 right-6 z-[95] md:right-[calc(50%-12rem)]">
+                  <motion.button
+                    type="button"
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => {
+                      if (!currentCarriage && selectedTrain.coaches.length > 0) {
+                        setCurrentCarriage(selectedTrain.coaches[0]);
+                      }
+                      setShowFABModal(true);
+                    }}
+                    className="flex items-center gap-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white px-5 py-4 rounded-full shadow-2xl shadow-orange-500/30 font-black text-[10px] uppercase tracking-widest border border-orange-400/20 hover:from-orange-600 hover:to-amber-600 transition-all cursor-pointer"
+                  >
+                    <Zap className="w-4 h-4 text-white animate-pulse" />
+                    <span>Report My Carriage</span>
+                  </motion.button>
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -1450,154 +1996,58 @@ export default function App() {
                 style={{ width: '100%', height: '100%' }}
                 colorScheme="DARK"
               >
-                {selectedTrain && (
-                  <>
-                    <RoutePolyline stations={selectedTrain.route.map(id => STATIONS.find(s => s.id === id)!).filter(Boolean)} />
-                    {selectedTrain.route.map(stationId => {
-                      const station = STATIONS.find(s => s.id === stationId);
-                      if (!station) return null;
-                      return (
-                        <React.Fragment key={stationId}>
-                          <AdvancedMarker 
-                            position={{ lat: station.latitude, lng: station.longitude }} 
-                            title={station.name}
-                            onClick={() => setOpenInfoWindow(stationId)}
-                          >
-                            <div className="flex flex-col items-center group">
-                              <div className="w-3 h-3 bg-neutral-950 border-2 border-orange-500 rounded-full group-hover:scale-150 transition-transform shadow-lg shadow-orange-500/20" />
-                              <div className="mt-1 overflow-hidden">
-                                <span className="block bg-neutral-900/80 backdrop-blur-md px-1.5 py-0.5 rounded text-[7px] font-black tracking-tighter text-orange-200 border border-white/5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  {station.name}
-                                </span>
-                              </div>
-                            </div>
-                          </AdvancedMarker>
-                          {openInfoWindow === stationId && (
-                            <InfoWindow 
-                              position={{ lat: station.latitude, lng: station.longitude }}
-                              onCloseClick={() => setOpenInfoWindow(null)}
-                            >
-                              <div className="p-1 min-w-[100px]">
-                                <p className="text-[10px] font-black uppercase tracking-widest text-orange-600 mb-0.5">Station</p>
-                                <h4 className="text-sm font-black tracking-tight text-neutral-900">{station.name}</h4>
-                                <p className="text-[9px] font-bold text-neutral-500 italic">Code: {station.id}</p>
-                              </div>
-                            </InfoWindow>
-                          )}
-                        </React.Fragment>
-                      );
-                    })}
-                    {livePosition ? (
-                      <React.Fragment>
-                        <AdvancedMarker 
-                          position={livePosition} 
-                          zIndex={100}
-                          onClick={() => setOpenInfoWindow('train')}
-                        >
-                          <div className="bg-orange-500 p-2 rounded-full shadow-2xl shadow-orange-500/50 ring-4 ring-orange-500/20">
-                            <TrainIcon className="w-4 h-4 text-white" />
-                          </div>
-                        </AdvancedMarker>
-                        {openInfoWindow === 'train' && (
-                          <InfoWindow 
-                            position={livePosition}
-                            onCloseClick={() => setOpenInfoWindow(null)}
-                          >
-                            <div className="p-1 min-w-[150px]">
-                              <p className="text-[10px] font-black uppercase tracking-widest text-orange-600 mb-0.5">Live Train Status</p>
-                              <h4 className="text-sm font-black tracking-tight text-neutral-900">{selectedTrain.name}</h4>
-                              <div className="flex items-center gap-1.5 mt-1.5">
-                                <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full uppercase", trainStatus?.bg, trainStatus?.color)}>
-                                  {trainStatus?.label}
-                                </span>
-                              </div>
-                              <p className="text-[9px] font-bold text-neutral-500 mt-2 italic">Last reported via crowdsourced coordinates</p>
-                            </div>
-                          </InfoWindow>
-                        )}
-                      </React.Fragment>
-                    ) : trainLocation && (
-                      <React.Fragment>
-                        <AdvancedMarker 
-                          position={{ lat: trainLocation.latitude, lng: trainLocation.longitude }} 
-                          zIndex={100}
-                          onClick={() => setOpenInfoWindow('train')}
-                        >
-                          <div className="bg-orange-500 p-2 rounded-full shadow-2xl shadow-orange-500/50 ring-4 ring-orange-500/30">
-                            <TrainIcon className="w-4 h-4 text-white" />
-                          </div>
-                        </AdvancedMarker>
-                        {openInfoWindow === 'train' && (
-                          <InfoWindow 
-                            position={{ lat: trainLocation.latitude, lng: trainLocation.longitude }}
-                            onCloseClick={() => setOpenInfoWindow(null)}
-                          >
-                            <div className="p-1 min-w-[150px]">
-                              <p className="text-[10px] font-black uppercase tracking-widest text-orange-600 mb-0.5">Train Tracker</p>
-                              <h4 className="text-sm font-black tracking-tight text-neutral-900">{selectedTrain.name}</h4>
-                              <div className="flex items-center gap-1.5 mt-1.5">
-                                <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full uppercase", trainStatus?.bg, trainStatus?.color)}>
-                                  {trainStatus?.label}
-                                </span>
-                              </div>
-                              <p className="text-[9px] font-bold text-neutral-500 mt-2 italic">At: {trainLocation.name}</p>
-                            </div>
-                          </InfoWindow>
-                        )}
-                      </React.Fragment>
-                    )}
-                  </>
-                )}
-                
-                {currentLocation && (
+                {selectedTrain && animatedTrainPosition ? (
                   <React.Fragment>
                     <AdvancedMarker 
-                      position={currentLocation} 
-                      zIndex={101}
-                      onClick={() => setOpenInfoWindow('user')}
+                      position={animatedTrainPosition} 
+                      zIndex={100}
+                      onClick={() => setOpenInfoWindow('train')}
                     >
-                      <div className="relative">
-                        <div className="absolute inset-0 bg-blue-500 rounded-full animate-ping opacity-50" />
-                        <div className="relative bg-white p-1 rounded-full border-2 border-blue-500 shadow-lg">
-                          <UserIcon className="w-3 h-3 text-blue-500" />
-                        </div>
+                      <div className="bg-orange-500 p-2 rounded-full shadow-2xl shadow-orange-500/50 ring-4 ring-orange-500/25 flex items-center justify-center relative">
+                        {isSimulating && (
+                          <div className="absolute inset-x-0 -bottom-6 bg-orange-600 border border-orange-500/30 text-white text-[7px] font-black uppercase tracking-widest px-1 py-0.5 rounded shadow-lg truncate max-w-[50px] text-center select-none">
+                            Sim {Math.round(simProgress.progress * 100)}%
+                          </div>
+                        )}
+                        <TrainIcon className={cn("w-4 h-4 text-white", isSimulating && "animate-pulse")} />
                       </div>
                     </AdvancedMarker>
-                    {openInfoWindow === 'user' && (
+                    {openInfoWindow === 'train' && (
                       <InfoWindow 
-                        position={currentLocation}
+                        position={animatedTrainPosition}
                         onCloseClick={() => setOpenInfoWindow(null)}
                       >
-                        <div className="p-1 min-w-[120px]">
-                          <p className="text-[10px] font-black uppercase tracking-widest text-blue-600 mb-0.5">Me</p>
-                          <h4 className="text-sm font-black tracking-tight text-neutral-900">Your Location</h4>
-                          <p className="text-[8px] font-bold text-neutral-400 mt-1 tabular-nums text-center">
-                            {currentLocation.lat.toFixed(5)}, {currentLocation.lng.toFixed(5)}
+                        <div className="p-1 min-w-[150px]">
+                          <p className="text-[10px] font-black uppercase tracking-widest text-orange-600 mb-0.5">
+                            {isSimulating ? 'Simulated Train Status' : 'Live Train Tracker'}
+                          </p>
+                          <h4 className="text-sm font-black tracking-tight text-neutral-900">{selectedTrain.name}</h4>
+                          <div className="flex items-center gap-1.5 mt-1.5">
+                            <span className={cn("text-[10px] font-black px-2 py-0.5 rounded-full uppercase", trainStatus?.bg, trainStatus?.color)}>
+                              {trainStatus?.label}
+                            </span>
+                          </div>
+                          <p className="text-[9px] font-bold text-neutral-500 mt-2 italic">
+                            {isSimulating 
+                              ? `Simulation running at ${simSpeed}x`
+                              : livePosition 
+                                ? 'Last reported via crowdsourced coordinates' 
+                                : `Currently near ${trainLocation?.name || 'station'}`
+                            }
                           </p>
                         </div>
                       </InfoWindow>
                     )}
-                    {/* Other anonymous users */}
-                    {publicUserPositions.map((pos) => (
-                      <AdvancedMarker 
-                        key={pos.id}
-                        position={{ lat: pos.latitude, lng: pos.longitude }}
-                      >
-                        <div className="p-1 bg-neutral-900/60 rounded-full border border-white/20 shadow-lg backdrop-blur-sm">
-                          <UserIcon className="w-2.5 h-2.5 text-neutral-400" />
-                        </div>
-                      </AdvancedMarker>
-                    ))}
                   </React.Fragment>
-                )}
+                ) : null}
               </Map>
               
               {/* Floating info card */}
-              <div className="absolute top-6 left-6 right-6 space-y-3">
+              <div className="absolute top-6 left-6 right-6">
                 <div className="bg-neutral-900/80 backdrop-blur-xl border border-white/10 p-4 rounded-3xl shadow-2xl flex items-center justify-between">
                   <div className="flex-1">
                     <h4 className="text-xs font-black italic tracking-tighter text-white">{selectedTrain?.name}</h4>
-                    <p className="text-[8px] font-black uppercase tracking-widest text-neutral-500">Live Simulation Route</p>
+                    <p className="text-[8px] font-black uppercase tracking-widest text-neutral-500">Live Train Route</p>
                   </div>
                   <div className="flex -space-x-2">
                     {selectedTrain?.route.map(id => (
@@ -1606,28 +2056,6 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                </div>
-
-                {/* Anonymous Sharing Toggle */}
-                <div className="bg-neutral-900/80 backdrop-blur-xl border border-white/10 p-3 rounded-2xl shadow-xl flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Users className={cn("w-3.5 h-3.5", shareLocation ? "text-blue-500" : "text-neutral-500")} />
-                    <span className="text-[9px] font-black uppercase tracking-widest text-neutral-300">
-                      Share location anonymously
-                    </span>
-                  </div>
-                  <button 
-                    onClick={() => setShareLocation(!shareLocation)}
-                    className={cn(
-                      "w-10 h-5 rounded-full p-1 transition-all relative",
-                      shareLocation ? "bg-blue-600" : "bg-neutral-800"
-                    )}
-                  >
-                    <motion.div 
-                      animate={{ x: shareLocation ? 20 : 0 }}
-                      className="bg-white w-3 h-3 rounded-full shadow-md"
-                    />
-                  </button>
                 </div>
               </div>
             </motion.div>
@@ -1686,6 +2114,48 @@ export default function App() {
                       className="bg-white w-5 h-5 rounded-full shadow-2xl"
                     />
                   </button>
+                </div>
+
+                <div className="flex items-center justify-between bg-black/60 p-6 rounded-[2rem] border border-neutral-800/50">
+                  <div className="flex items-center gap-4">
+                    <div className={cn(
+                      "p-3 rounded-2xl transition-all shadow-lg", 
+                      alarmSoundEnabled ? "bg-orange-500/20 border border-orange-500/30 text-orange-400" : "bg-neutral-800 border border-neutral-700 text-neutral-500"
+                    )}>
+                      {alarmSoundEnabled ? (
+                        <Volume2 className="w-5 h-5" />
+                      ) : (
+                        <VolumeX className="w-5 h-5" />
+                      )}
+                    </div>
+                    <div>
+                      <p className="font-black text-neutral-100 italic">Sound Notification</p>
+                      <p className="text-[9px] text-neutral-500 font-black uppercase tracking-widest">Railway chime chord alert</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => {
+                        initAudio();
+                        playAlarmSound();
+                      }}
+                      className="px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest text-orange-400 border border-orange-500/30 bg-orange-500/5 hover:bg-orange-500/10 cursor-pointer transition-all shrink-0"
+                    >
+                      Test Sound
+                    </button>
+                    <button 
+                      onClick={() => setAlarmSoundEnabled(!alarmSoundEnabled)}
+                      className={cn(
+                        "w-14 h-7 rounded-full p-1 transition-all relative ring-2 ring-neutral-800",
+                        alarmSoundEnabled ? "bg-orange-500" : "bg-neutral-900"
+                      )}
+                    >
+                      <motion.div 
+                        animate={{ x: alarmSoundEnabled ? 28 : 0 }}
+                        className="bg-white w-5 h-5 rounded-full shadow-2xl"
+                      />
+                    </button>
+                  </div>
                 </div>
 
                 {alarmActive && distanceToDest !== null && (
@@ -1789,8 +2259,20 @@ export default function App() {
       </main>
 
       {/* Nav Bar */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-[#050505]/90 backdrop-blur-3xl border-t border-neutral-900 px-6 pt-4 pb-10 z-[100]">
+      <nav className="fixed bottom-0 left-0 right-0 bg-[#050505]/95 backdrop-blur-3xl border-t border-neutral-900 px-2 pt-4 pb-10 z-[100]">
         <div className="max-w-md mx-auto flex items-center justify-around">
+          <NavButton 
+            active={activeTab === 'home'} 
+            onClick={() => setActiveTab('home')}
+            icon={<Home />}
+            label="Home"
+          />
+          <NavButton 
+            active={activeTab === 'map'} 
+            onClick={() => setActiveTab('map')}
+            icon={<MapIcon />}
+            label="Map"
+          />
           <NavButton 
             active={activeTab === 'pings'} 
             onClick={() => setActiveTab('pings')}
@@ -1802,12 +2284,6 @@ export default function App() {
             onClick={() => setActiveTab('coach')}
             icon={<LayoutList />}
             label="Coach"
-          />
-          <NavButton 
-            active={activeTab === 'map'} 
-            onClick={() => setActiveTab('map')}
-            icon={<MapIcon />}
-            label="Map"
           />
           <NavButton 
             active={activeTab === 'schedule'} 
@@ -1833,7 +2309,7 @@ function NavButton({ active, onClick, icon, label }: { active: boolean, onClick:
     <button 
       onClick={onClick}
       className={cn(
-        "flex flex-col items-center gap-2 transition-all relative px-6 group",
+        "flex flex-col items-center gap-2 transition-all relative px-2 group",
         active ? "text-orange-500" : "text-neutral-600 hover:text-neutral-400"
       )}
     >
