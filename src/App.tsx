@@ -110,6 +110,7 @@ export default function App() {
   const [availability, setAvailability] = useState<CoachAvailability[]>([]);
   const [showDelayModal, setShowDelayModal] = useState(false);
   const [showFABModal, setShowFABModal] = useState(false);
+  const [showPingFABModal, setShowPingFABModal] = useState(false);
   const [currentCarriage, setCurrentCarriage] = useState<string | null>(() => {
     return localStorage.getItem('current_carriage') || null;
   });
@@ -1409,6 +1410,74 @@ export default function App() {
           )}
         </AnimatePresence>
 
+        {/* Platform Ping Quick Report Modal */}
+        <AnimatePresence>
+          {showPingFABModal && selectedStation && selectedTrain && (
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-6">
+              <motion.div 
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowPingFABModal(false)}
+                className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+              />
+              <motion.div 
+                initial={{ scale: 0.9, opacity: 0, y: 20 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.9, opacity: 0, y: 20 }}
+                className="relative w-full max-w-sm bg-neutral-900 border border-neutral-800 rounded-[2.5rem] p-8 shadow-2xl space-y-6"
+              >
+                <div className="text-center space-y-1">
+                  <h3 className="text-xl font-black italic tracking-tighter text-white">Platform Ping</h3>
+                  <p className="text-[10px] uppercase font-black tracking-widest text-neutral-500">
+                    Quickly report arrival platform for {selectedTrain.name} at {selectedStation.name}
+                  </p>
+                </div>
+
+                {!user ? (
+                  <div className="bg-orange-500/5 border border-orange-500/20 rounded-[2rem] p-6 text-center space-y-4">
+                    <p className="text-xs text-orange-200/60 font-bold italic">Sign in to report live platform updates</p>
+                    <button 
+                      onClick={() => {
+                        handleLogin();
+                      }}
+                      className="w-full bg-orange-500 text-white py-3 rounded-full text-[10px] font-black uppercase tracking-widest hover:bg-orange-600 transition-all shadow-xl shadow-orange-500/20 cursor-pointer"
+                    >
+                      Login with Google
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-neutral-400 text-center">Select Arrival Platform</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      {['1', '2', '3', '4', '5', '6'].map((num) => (
+                        <button
+                          key={num}
+                          onClick={() => {
+                            handleReportPlatform(num);
+                            setShowPingFABModal(false);
+                          }}
+                          className="py-4 bg-neutral-950 border border-neutral-800 rounded-2xl flex flex-col items-center justify-center gap-0.5 hover:border-orange-500 hover:bg-neutral-900 transition-all group shadow-inner cursor-pointer"
+                        >
+                          <span className="text-neutral-500 text-[8px] uppercase font-black group-hover:text-orange-500 transition-colors">Platform</span>
+                          <span className="text-xl font-black text-white">{num}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <button 
+                  onClick={() => setShowPingFABModal(false)}
+                  className="w-full py-2 text-[10px] font-black uppercase tracking-widest text-neutral-500 hover:text-white transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
         {/* Tab Content */}
         <AnimatePresence mode="wait">
           {activeTab === 'home' && (
@@ -1812,6 +1881,22 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              {/* Floating Action Button (FAB) for Platform Ping Quick Report */}
+              {pings.length === 0 && selectedStation && selectedTrain && (
+                <div className="fixed bottom-28 right-6 z-[95] md:right-[calc(50%-12rem)]">
+                  <motion.button
+                    type="button"
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => setShowPingFABModal(true)}
+                    className="flex items-center gap-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white px-5 py-4 rounded-full shadow-2xl shadow-orange-500/30 font-black text-[10px] uppercase tracking-widest border border-orange-400/20 hover:from-orange-600 hover:to-amber-600 transition-all cursor-pointer"
+                  >
+                    <Wifi className="w-4 h-4 text-white animate-pulse" />
+                    <span>Report Platform</span>
+                  </motion.button>
+                </div>
+              )}
             </motion.div>
           )}
 
